@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Helm</title>
+<style>
+  html,body{margin:0;padding:0;background:#d9d9de;}
+  #root{min-height:100vh;}
+</style>
+<!-- React + Babel (so the original JSX runs unchanged in the browser) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+/* ──────────────────────────────────────────────────────────────
+   Storage shim: the original app used Claude's artifact storage
+   API (window.storage). In a plain browser that doesn't exist, so
+   we back it with localStorage. Same shape: get -> {value}, set(k,v).
+   ────────────────────────────────────────────────────────────── */
+window.storage = window.storage || {
+  get(key){
+    return new Promise((resolve, reject) => {
+      const value = localStorage.getItem(key);
+      if (value === null) reject(new Error("not found"));
+      else resolve({ value });
+    });
+  },
+  set(key, value){
+    return new Promise((resolve) => {
+      localStorage.setItem(key, value);
+      resolve();
+    });
+  }
+};
+
+const PRAYERS = [
+  { id:"fajr",    name:"Fajr",    label:"Dawn",      color:"#5B5CF6" },
+  { id:"dhuhr",   name:"Dhuhr",   label:"Midday",    color:"#D97706" },
+  { id:"asr",     name:"Asr",     label:"Afternoon", color:"#EA580C" },
+  { id:"maghrib", name:"Maghrib", label:"Sunset",    color:"#DB2777" },
+  { id:"isha",    name:"Isha",    label:"Night",     color:"#4338CA" },
+];
+
+const DEF_CATS = [
+  { id:"peace",    name:"Peace",     tasks:[{id:"p1",text:"Quran 1 page"},{id:"p2",text:"Morning Adhkar"},{id:"p3",text:"5 Prayers"},{id:"p4",text:"Rawatib"},{id:"p5",text:""}] },
+  { id:"work",     name:"Work",      tasks:[{id:"w1",text:""},{id:"w2",text:""},{id:"w3",text:""},{id:"w4",text:""},{id:"w5",text:""},{id:"w6",text:""}] },
+  { id:"project",  name:"Project",   tasks:[{id:"pr1",text:"Achu"},{id:"pr2",text:"Ihya"},{id:"pr3",text:"Create app"},{id:"pr4",text:""},{id:"pr5",text:""}] },
+  { id:"selfcare", name:"Self Care", tasks:[{id:"sc1",text:"Gym"},{id:"sc2",text:"Bath"},{id:"sc3",text:"Brush twice"},{id:"sc4",text:""},{id:"sc5",text:""},{id:"sc6",text:""}] },
+  { id:"parents",  name:"Parents/M", tasks:[{id:"pa1",text:""},{id:"pa2",text:""},{id:"pa3",text:""},{id:"pa4",text:""},{id:"pa5",text:""},{id:"pa6",text:""}] },
+  { id:"laundry",  name:"Laundry",   tasks:[{id:"l1",text:"Laundry - White"},{id:"l2",text:"Laundry - Color"},{id:"l3",text:"Laundry - Inner"},{id:"l4",text:"Laundry - Abayas"},{id:"l5",text:"Laundry - Bedsheet"},{id:"l6",text:"Laundry - Hand"}] },
+  { id:"cleaning", name:"Cleaning",  tasks:[{id:"cl1",text:"Vacuum Room"},{id:"cl2",text:"Mop Room"},{id:"cl3",text:"Change bedsheet"},{id:"cl4",text:"Wipe room & mirror"},{id:"cl5",text:""}] },
+];
+
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DAY_L=["S","M","T","W","T","F","S"];
+function toDS(d){return d.toISOString().slice(0,10);}
+function getWeek(d){const s=new Date(d);s.setDate(d.getDate()-d.getDay());return Array.from({length:7},(_,i)=>{const dd=new Date(s);dd.setDate(s.getDate()+i);return dd;});}
+async function sg(k){try{const r=await window.storage.get(k);return JSON.parse(r.value);}catch{return null;}}
+async function ss(k,v){try{await window.storage.set(k,JSON.stringify(v));}catch{}}
+
+const CSS=`
+*{box-sizing:border-box;margin:0;padding:0}
+.app{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#F2F2F7;min-height:100vh;max-width:430px;margin:0 auto;color:#000}
+.topbar{background:#fff;padding:14px 18px 0;position:sticky;top:0;z-index:20;border-bottom:1px solid #E5E5EA}
+.logo{font-size:20px;font-weight:700;letter-spacing:-.4px;margin-bottom:12px}
+.logo em{color:#BB4D2A;font-style:normal}
+.tabs{display:flex;gap:5px;overflow-x:auto;scrollbar-width:none;padding-bottom:1px}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:7px 15px;border-radius:20px;border:none;font-size:13px;font-weight:500;white-space:nowrap;cursor:pointer;background:#F2F2F7;color:#555;font-family:inherit}
+.tab.on{background:#000;color:#fff}
+.wbar{background:#1C1C1E;padding:11px 16px 13px}
+.wdate{color:#fff;font-size:14px;font-weight:600;margin-bottom:9px}
+.wdays{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.dp{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+.dl{color:#8E8E93;font-size:11px;font-weight:500}
+.dc{width:33px;height:33px;border-radius:50%;background:#3A3A3C;display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600}
+.dc.today{background:#BB4D2A}
+.dc.sel{outline:2px solid #fff;outline-offset:1.5px}
+.ddot{width:4px;height:4px;border-radius:50%;background:#5B5CF6;margin-top:2px}
+.page{padding:14px 13px 60px;display:flex;flex-direction:column;gap:0}
+.sec-label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#8E8E93;text-transform:uppercase;padding:4px 4px 10px}
+.divider{height:1px;background:#E5E5EA;margin:18px 0}
+
+/* ─ prayer blocks ─ */
+.pblock{background:#fff;border-radius:14px;margin-bottom:8px;overflow:hidden;box-shadow:0 1px 4px #00000010}
+.pblock-head{display:flex;align-items:center;gap:10px;padding:13px 15px 11px}
+.pdot{width:9px;height:9px;border-radius:50%;flex:none}
+.pname{font-size:15px;font-weight:700}
+.plabel{font-size:12px;color:#8E8E93;margin-left:2px}
+.pcnt{margin-left:auto;font-size:12px;color:#8E8E93}
+.ptask{display:flex;align-items:center;gap:10px;padding:8px 15px;border-top:1px solid #F2F2F7}
+.circle{width:22px;height:22px;border-radius:50%;border:1.5px solid #C7C7CC;flex:none;cursor:pointer;display:grid;place-items:center;transition:.12s}
+.circle.done{background:#000;border-color:#000}
+.ptask-txt{font-size:15px;flex:1}
+.ptask-txt.done{text-decoration:line-through;color:#8E8E93}
+.rmv{background:none;border:none;cursor:pointer;color:#C7C7CC;font-size:18px;line-height:1;padding:0 2px}
+.rmv:hover{color:#BB4D2A}
+.pempty{padding:10px 15px 13px;font-size:13.5px;color:#C7C7CC;font-style:italic;border-top:1px solid #F2F2F7}
+
+/* ─ task pool ─ */
+.cat-card{background:#fff;border-radius:14px;margin-bottom:8px;overflow:hidden;box-shadow:0 1px 4px #00000010}
+.cat-head{padding:13px 15px 9px;font-size:16px;font-weight:700}
+.task-row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid #F2F2F7}
+.task-bul{width:7px;height:7px;border-radius:50%;background:#D1D1D6;flex:none}
+.task-inp{border:none;outline:none;font-family:inherit;font-size:15px;background:transparent;flex:1;color:#000}
+.task-inp::placeholder{color:#C7C7CC}
+.add-btn{background:none;border:none;cursor:pointer;width:26px;height:26px;border-radius:50%;background:#F2F2F7;display:flex;align-items:center;justify-content:center;flex:none;transition:.15s}
+.add-btn:hover{background:#E5E5EA}
+.add-btn.active{background:#000}
+.picker-row{display:flex;gap:6px;padding:8px 14px 10px;border-top:1px solid #F2F2F7;flex-wrap:wrap}
+.ppill{display:flex;align-items:center;gap:5px;padding:6px 12px;border-radius:20px;border:1.5px solid #E5E5EA;font-size:12.5px;font-weight:600;cursor:pointer;transition:.12s;font-family:inherit;background:#fff}
+.ppill.assigned{color:#fff;border-color:transparent}
+.cat-add{display:flex;padding:9px 14px 11px;border-top:1px solid #F2F2F7}
+.cat-add-btn{background:none;border:none;font-family:inherit;font-size:14px;color:#BB4D2A;font-weight:500;cursor:pointer;padding:0}
+.new-cat{padding:4px 13px 14px}
+.new-cat-btn{width:100%;background:#fff;border:none;border-radius:14px;padding:13px 16px;font-family:inherit;font-size:15px;color:#BB4D2A;font-weight:600;cursor:pointer;text-align:left;box-shadow:0 1px 3px #00000010}
+.chk{width:11px;height:11px}
+.stub{padding:50px 20px;text-align:center;color:#8E8E93;font-size:15px}
+.stub h3{font-size:18px;font-weight:600;color:#000;margin-bottom:8px}
+`;
+
+function App(){
+  const today=new Date();
+  const [cats,setCats]=useState(DEF_CATS);
+  const [assign,setAssign]=useState({fajr:[],dhuhr:[],asr:[],maghrib:[],isha:[]});
+  const [checked,setChecked]=useState({});
+  const [selDate,setSelDate]=useState(today);
+  const [tab,setTab]=useState("daily");
+  const [adding,setAdding]=useState(null); // taskId showing prayer picker
+  const [loaded,setLoaded]=useState(false);
+
+  const todayDS=toDS(today), selDS=toDS(selDate);
+  const week=getWeek(selDate);
+  const checkedSet=checked[selDS]||new Set();
+
+  useEffect(()=>{
+    (async()=>{
+      const c=await sg("h4-cats"); if(c&&c.length) setCats(c);
+      const a=await sg("h4-assign"); if(a) setAssign({fajr:[],dhuhr:[],asr:[],maghrib:[],isha:[],...a});
+      const dc={};
+      for(const d of getWeek(new Date())){const k=toDS(d);const v=await sg("h4-day-"+k);if(v)dc[k]=new Set(v);}
+      setChecked(dc); setLoaded(true);
+    })();
+  },[]);
+  useEffect(()=>{if(loaded)ss("h4-cats",cats);},[cats,loaded]);
+  useEffect(()=>{if(loaded)ss("h4-assign",assign);},[assign,loaded]);
+
+  const taskById=id=>cats.flatMap(c=>c.tasks).find(t=>t.id===id);
+
+  const toggleCheck=id=>{
+    setChecked(prev=>{
+      const cur=new Set(prev[selDS]||[]); cur.has(id)?cur.delete(id):cur.add(id);
+      const next={...prev,[selDS]:cur}; ss("h4-day-"+selDS,[...cur]); return next;
+    });
+  };
+
+  const toggleAssign=(pid,tid)=>{
+    setAssign(prev=>{
+      const arr=[...(prev[pid]||[])];
+      const i=arr.indexOf(tid); if(i>=0)arr.splice(i,1); else arr.push(tid);
+      return {...prev,[pid]:arr};
+    });
+    setAdding(null);
+  };
+
+  const removeFromBlock=(pid,tid)=>{
+    setAssign(prev=>({...prev,[pid]:(prev[pid]||[]).filter(id=>id!==tid)}));
+  };
+
+  const setTaskText=(catId,taskId,text)=>
+    setCats(prev=>prev.map(c=>c.id===catId?{...c,tasks:c.tasks.map(t=>t.id===taskId?{...t,text}:t)}:c));
+
+  const addTask=catId=>{
+    const nid=catId+"-"+Date.now();
+    setCats(prev=>prev.map(c=>c.id===catId?{...c,tasks:[...c.tasks,{id:nid,text:""}]}:c));
+  };
+
+  const addCat=()=>{
+    const nid="cat-"+Date.now();
+    setCats(prev=>[...prev,{id:nid,name:"New Category",tasks:[]}]);
+  };
+
+  /* ── Daily view ── */
+  const DailyView=()=>(
+    <div className="page">
+      {/* prayer blocks */}
+      <div className="sec-label">Your Day</div>
+      {PRAYERS.map(p=>{
+        const ids=(assign[p.id]||[]).filter(id=>{const t=taskById(id);return t&&t.text;});
+        const doneN=ids.filter(id=>checkedSet.has(id)).length;
+        return (
+          <div className="pblock" key={p.id}>
+            <div className="pblock-head">
+              <div className="pdot" style={{background:p.color}}/>
+              <span className="pname">{p.name}</span>
+              <span className="plabel">{p.label}</span>
+              {ids.length>0&&<span className="pcnt">{doneN}/{ids.length}</span>}
+            </div>
+            {ids.length===0&&<div className="pempty">No tasks yet — add from below ↓</div>}
+            {ids.map(id=>{
+              const task=taskById(id); if(!task) return null;
+              const done=checkedSet.has(id);
+              return (
+                <div className="ptask" key={id}>
+                  <div className={`circle ${done?"done":""}`} onClick={()=>toggleCheck(id)}>
+                    {done&&<svg className="chk" viewBox="0 0 12 12" fill="none"><path d="M2 6l2.5 2.5L10 3" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </div>
+                  <span className={`ptask-txt ${done?"done":""}`}>{task.text}</span>
+                  <button className="rmv" onClick={()=>removeFromBlock(p.id,id)}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      <div className="divider"/>
+
+      {/* task pool */}
+      <div className="sec-label">Tasks</div>
+      {cats.map(cat=>(
+        <div className="cat-card" key={cat.id}>
+          <div className="cat-head">
+            <input style={{border:"none",outline:"none",fontFamily:"inherit",fontSize:16,fontWeight:700,background:"transparent",width:"100%"}}
+              defaultValue={cat.name}
+              onBlur={e=>setCats(prev=>prev.map(c=>c.id===cat.id?{...c,name:e.target.value||cat.name}:c))}/>
+          </div>
+          {cat.tasks.map(task=>{
+            const isAdding=adding===task.id;
+            // which blocks already have this task
+            const inBlocks=PRAYERS.filter(p=>(assign[p.id]||[]).includes(task.id)).map(p=>p.id);
+            return (
+              <div key={task.id}>
+                <div className="task-row">
+                  <div className="task-bul"/>
+                  <input className="task-inp" defaultValue={task.text} placeholder="Task name…"
+                    onBlur={e=>setTaskText(cat.id,task.id,e.target.value.trim())}/>
+                  {/* + button — only show if task has text */}
+                  {task.text&&(
+                    <button className={`add-btn ${isAdding?"active":""}`}
+                      onClick={()=>setAdding(isAdding?null:task.id)}
+                      title="Add to prayer block">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M6 1v10M1 6h10" stroke={isAdding?"#fff":"#555"} strokeWidth="1.8" strokeLinecap="round"/>
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {/* prayer block picker */}
+                {isAdding&&(
+                  <div className="picker-row">
+                    {PRAYERS.map(p=>{
+                      const on=inBlocks.includes(p.id);
+                      return (
+                        <button key={p.id} className={`ppill ${on?"assigned":""}`}
+                          style={on?{background:p.color}:{color:p.color,borderColor:p.color+"55"}}
+                          onClick={()=>toggleAssign(p.id,task.id)}>
+                          <span>{p.name}</span>
+                          {on&&<svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l2.5 2.5L10 3" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div className="cat-add">
+            <button className="cat-add-btn" onClick={()=>addTask(cat.id)}>+ Add task</button>
+          </div>
+        </div>
+      ))}
+      <div className="new-cat">
+        <button className="new-cat-btn" onClick={addCat}>+ New category</button>
+      </div>
+    </div>
+  );
+
+  /* ── Weekly view ── */
+  const WeeklyView=()=>{
+    const pct=ds2=>{const ch=checked[ds2]||new Set();let t=0,d=0;cats.forEach(c=>c.tasks.forEach(tk=>{if(tk.text){t++;if(ch.has(tk.id))d++;}}));return t?d/t:0;};
+    return (
+      <div className="page">
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:5,marginBottom:14}}>
+          {week.map((d,i)=>{
+            const ds2=toDS(d),isToday=ds2===todayDS;
+            const r=pct(ds2);
+            return (
+              <div key={i} onClick={()=>{setSelDate(d);setTab("daily");}}
+                style={{background:"#fff",borderRadius:10,padding:"8px 3px",display:"flex",flexDirection:"column",alignItems:"center",gap:3,cursor:"pointer",boxShadow:"0 1px 2px #00000010",border:isToday?"1.5px solid #BB4D2A":"none"}}>
+                <span style={{fontSize:10,color:"#8E8E93",fontWeight:500}}>{DAY_L[d.getDay()]}</span>
+                <span style={{fontSize:15,fontWeight:700}}>{d.getDate()}</span>
+                <div style={{width:26,height:4,borderRadius:2,background:"#E5E5EA",overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${r*100}%`,background:"#5B5CF6",borderRadius:2}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {PRAYERS.map(p=>{
+          const ids=(assign[p.id]||[]).filter(id=>{const t=taskById(id);return t&&t.text;});
+          if(!ids.length) return null;
+          return (
+            <div key={p.id} style={{background:"#fff",borderRadius:13,marginBottom:8,overflow:"hidden",boxShadow:"0 1px 4px #00000010"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,padding:"12px 15px 8px"}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:p.color}}/>
+                <span style={{fontSize:15,fontWeight:700}}>{p.name}</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr repeat(7,28px)",gap:4,padding:"4px 12px 12px",alignItems:"center"}}>
+                {ids.map(id=>{
+                  const task=taskById(id); if(!task) return null;
+                  return [
+                    <span key={id+"-t"} style={{fontSize:13,color:"#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{task.text}</span>,
+                    ...week.map((d,di)=>{
+                      const ch2=checked[toDS(d)]||new Set();
+                      const done=ch2.has(id);
+                      return (
+                        <div key={id+"-"+di} style={{width:22,height:22,borderRadius:"50%",background:done?"#000":"#F2F2F7",border:toDS(d)===todayDS?"1.5px solid #BB4D2A":"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                          {done&&<svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l2.5 2.5L10 3" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </div>
+                      );
+                    })
+                  ];
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const dateLabel=selDS===todayDS?`Today, ${selDate.getDate()} ${MONTHS[selDate.getMonth()]}`:`${selDate.getDate()} ${MONTHS[selDate.getMonth()]}`;
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+      <div className="topbar">
+        <div className="logo">Helm<em>.</em></div>
+        <div className="tabs">
+          {[["daily","Daily"],["weekly","Weekly"],["monthly","Monthly"],["year","Year Goals"]].map(([id,label])=>(
+            <button key={id} className={`tab ${tab===id?"on":""}`} onClick={()=>{setTab(id);setAdding(null);}}>{label}</button>
+          ))}
+        </div>
+      </div>
+
+      {(tab==="daily"||tab==="weekly")&&(
+        <div className="wbar">
+          <div className="wdate">{dateLabel}</div>
+          <div className="wdays">
+            {week.map((d,i)=>{
+              const ds2=toDS(d),isSel=ds2===selDS,isToday=ds2===todayDS;
+              const hasDone=(checked[ds2]||new Set()).size>0;
+              return (
+                <div key={i} className="dp" onClick={()=>setSelDate(d)}>
+                  <span className="dl">{DAY_L[d.getDay()]}</span>
+                  <div className={`dc ${isToday?"today":""} ${isSel?"sel":""}`}>{d.getDate()}</div>
+                  {hasDone&&!isSel?<div className="ddot"/>:<div style={{height:6}}/>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab==="daily"   && <DailyView/>}
+      {tab==="weekly"  && <WeeklyView/>}
+      {tab==="monthly" && <div className="stub"><h3>Monthly</h3><p>Coming soon.</p></div>}
+      {tab==="year"    && <div className="stub"><h3>Year Goals</h3><p>Coming soon.</p></div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
