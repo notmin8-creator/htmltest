@@ -8,13 +8,11 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          ref: claude/rental-scraper-agent-AoDc3
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,8 +20,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
 
       - name: Run scraper
         run: python rental_scraper_agent.py --csv
