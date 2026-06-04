@@ -1,0 +1,48 @@
+name: Run Rental Scraper
+
+on:
+  workflow_dispatch:  # manual trigger — click "Run workflow" in Actions tab
+  schedule:
+    - cron: '0 6 * * 1'  # also runs automatically every Monday at 6am UTC
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: claude/rental-scraper-agent-AoDc3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        run: python rental_scraper_agent.py --csv
+
+      - name: Upload Excel results
+        uses: actions/upload-artifact@v4
+        with:
+          name: riyadh-rentals-${{ github.run_number }}
+          path: |
+            riyadh_studio_rentals_*.xlsx
+            riyadh_studio_rentals_*.csv
+          retention-days: 30
+
+      - name: Show summary
+        run: |
+          echo "## Scraping Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for f in riyadh_studio_rentals_*.xlsx; do
+            echo "✅ Generated: $f" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the Excel file from the **Artifacts** section below." >> $GITHUB_STEP_SUMMARY
