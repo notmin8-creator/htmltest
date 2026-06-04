@@ -1,106 +1,100 @@
-"""OpenSooq scraper — Playwright + API interception."""
+"""
+OpenSooq scraper — direct requests + JSON extraction.
+"""
 
 import re
 import json
 import logging
-import time
+import requests
 from urllib.parse import quote
-from bs4 import BeautifulSoup
 from .base import BaseScraper
-from .pw_browser import fetch
 
 logger = logging.getLogger(__name__)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    "Accept-Language": "ar-SA,ar;q=0.9,en-US;q=0.8",
+}
+
+BASE = "https://sa.opensooq.com"
+
+AREA_SLUGS = {
+    "malaz":        "al-malaz",
+    "rabwah":       "al-rabwah",
+    "sulaimaniyah": "al-sulaimaniyah",
+}
 
 
 class OpenSooqScraper(BaseScraper):
     SOURCE_NAME = "OpenSooq"
-    BASE_URL    = "https://sa.opensooq.com"
-
-    AREA_URLS = {
-        "malaz":        f"{BASE_URL}/ar/riyadh/al-malaz/real-estate-for-rent/rooms-for-rent",
-        "rabwah":       f"{BASE_URL}/ar/riyadh/al-rabwah/real-estate-for-rent/rooms-for-rent",
-        "sulaimaniyah": f"{BASE_URL}/ar/riyadh/al-sulaimaniyah/real-estate-for-rent/rooms-for-rent",
-    }
-
-    API_PATTERNS = ["opensooq.com/api", "/api/posts", "/api/listings", "graphql"]
+    BASE_URL = BASE
 
     def scrape(self):
-        logger.info("[OpenSooq] Starting scrape with Playwright…")
-        for area_key, url in self.AREA_URLS.items():
-            html, intercepted = fetch(
-                url,
-                api_patterns=self.API_PATTERNS,
-                wait_selector="[class*='item'], [class*='card'], [class*='listing']",
-            )
-            self._process(html, intercepted, area_key)
-            time.sleep(2)
+        logger.info("[OpenSooq] Starting scrape…")
+        for area_key, slug in AREA_SLUGS.items():
+            urls = [
+                f"{BASE}/ar/riyadh/{slug}/real-estate-for-rent/rooms-for-rent",
+                f"{BASE}/ar/riyadh/{slug}/real-estate-for-rent/apartments-for-rent",
+                f"{BASE}/en/riyadh/{slug}/real-estate-for-rent/studio",
+            ]
+            for url in urls:
+                try:
+                    resp = requests.get(url, headers=HEADERS, timeout=20)
+                    if resp.status_code == 200:
+                        self._parse_page(resp.text, area_key)
+                except Exception as exc:
+                    logger.debug(f"[OpenSooq] Error: {exc}")
+                self._delay()
         logger.info(f"[OpenSooq] Done — {len(self.listings)} listings.")
         return self.listings
 
-    def _process(self, html, intercepted, area_key):
-        for resp in intercepted:
-            data  = resp["data"]
-            items = (
-                data.get("listings") or data.get("posts") or
-                data.get("data", {}).get("listings", []) or
-                (data if isinstance(data, list) else [])
-            )
-            for item in (items or []):
-                self._parse_api_item(item, area_key)
-
-        if not html:
-            return
-        soup = BeautifulSoup(html, "lxml")
-
-        for script in soup.find_all("script", id="__NEXT_DATA__"):
+    def _parse_page(self, html, area_key):
+        # Try __NEXT_DATA__
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+            html, re.S
+        )
+        if m:
             try:
-                data  = json.loads(script.string or "")
+                data  = json.loads(m.group(1))
                 items = (
                     data.get("props", {}).get("pageProps", {}).get("listings", [])
                     or data.get("props", {}).get("pageProps", {}).get("posts", [])
+                    or data.get("props", {}).get("pageProps", {}).get("items", [])
                 )
                 for item in items:
-                    self._parse_api_item(item, area_key)
+                    self._parse_item(item, area_key)
                 return
             except Exception:
                 pass
 
-        cards = (
-            soup.find_all("li",  class_=re.compile(r"item|post|listing|card", re.I))
-            or soup.find_all("div", class_=re.compile(r"item|post|listing|card", re.I))
-            or soup.find_all("article")
-        )
-        for card in cards:
-            text_blob = card.get_text(" ", strip=True)
-            if not any(k in text_blob for k in ["studio", "استوديو", "ستوديو", "غرفة وصالة"]):
-                continue
-            price = self.extract_price(text_blob)
-            if not self.in_price_range(price):
-                continue
-            title_tag = card.find(["h2", "h3", "h4", "strong"])
-            a_tag     = card.find("a", href=True)
-            title = title_tag.get_text(strip=True) if title_tag else text_blob[:80]
-            href  = a_tag["href"] if a_tag else "N/A"
-            link  = href if href.startswith("http") else f"{self.BASE_URL}{href}"
-            self.listings.append(self.make_listing(
-                source=self.SOURCE_NAME, area=area_key, title=title, price=price,
-                link=link, phone=self.extract_phone(text_blob),
-                furnished=self.detect_furnished(text_blob),
-                property_type=self.detect_property_type(text_blob),
-                description=text_blob[:200],
-            ))
+        # Try embedded JSON arrays
+        for m in re.finditer(r'"(?:listings|posts|items)"\s*:\s*(\[.+?\])', html, re.S):
+            try:
+                items = json.loads(m.group(1))
+                for item in items:
+                    self._parse_item(item, area_key)
+                return
+            except Exception:
+                pass
 
-    def _parse_api_item(self, item, area_key):
+    def _parse_item(self, item, area_key):
         try:
             title     = item.get("title") or item.get("name") or "N/A"
             text_blob = f"{title} {item.get('description', '')}"
-            if not any(k in text_blob for k in ["studio", "استوديو", "ستوديو"]):
+            if not any(k in text_blob for k in ["studio", "Studio", "استوديو", "ستوديو"]):
                 return
             price = self.extract_price(item.get("price") or text_blob)
             if not self.in_price_range(price):
                 return
             post_id = item.get("id") or ""
-            link    = item.get("url") or item.get("link") or f"{self.BASE_URL}/post/{post_id}"
+            link    = item.get("url") or item.get("link") or f"{BASE}/post/{post_id}"
+            if not link.startswith("http"):
+                link = f"{BASE}{link}"
             self.listings.append(self.make_listing(
                 source=self.SOURCE_NAME, area=area_key, title=title, price=price,
                 link=link, phone=self.extract_phone(text_blob),

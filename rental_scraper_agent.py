@@ -26,7 +26,6 @@ from scrapers import (
     WasaltScraper,
     OpenSooqScraper,
     PropertyFinderScraper,
-    close_browser,
 )
 from exporter import export_to_excel, export_to_csv, deduplicate
 
@@ -102,8 +101,6 @@ class RentalScraperAgent:
         logger.info("\n  Listings per site:")
         for site, cnt in self.stats.items():
             logger.info(f"    {site:<22} {cnt:>4}")
-
-        close_browser()
 
         # Export
         excel_file = export_to_excel(unique, output_filename)
